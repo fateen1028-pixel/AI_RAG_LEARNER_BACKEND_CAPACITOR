@@ -14,7 +14,7 @@ def create_app():
     app.config.from_object('app.config.Config')
     
     # CORS
-    CORS(app, origins="*", supports_credentials=True)
+    CORS(app, supports_credentials=True)
     
     # Initialize Firebase (if needed)
     from app.utils.helpers import initialize_firebase
