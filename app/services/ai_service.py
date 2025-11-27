@@ -58,17 +58,22 @@ class AIService:
             }
 
             from app.utils.ai_helpers import llm
-            chain = chat_qa_prompt | llm 
-            response = chain.invoke(prompt_data)
+            response = run_chain(chat_qa_prompt, prompt_data)
+            if not response:
+                raise Exception("AI did not return JSON")
+
             raw_answer = response.content
 
             # FIX: Use enhanced processing instead of old method
             processed_data = enhanced_process_ai_response(raw_answer)
 
             return {
-                "status": "success", 
-                "answer": processed_data["text"],
-                "code_blocks": processed_data["code_blocks"]
+                "status": "success",
+                "answer": response.get("markdown", ""),
+                "bullets": response.get("bullets", []),
+                "steps": response.get("steps", []),
+                "bold": response.get("bold", []),
+                "code_blocks": response.get("code_blocks", [])
             }
 
         except Exception as e:
@@ -173,8 +178,35 @@ class AIService:
 
     @staticmethod
     def get_ai_generated_materials(topic):
+
+        # Try LLM
         materials = run_chain(materials_prompt, {"topic": topic})
-        return {"status": "success", "materials": materials}
+
+        # Case A: LLM returned nothing
+        if not materials:
+            return AIService.fetch_current_materials_with_search(topic)
+
+        # Case B: LLM returned empty lists
+        if (
+            len(materials.get("videos", [])) == 0 or
+            len(materials.get("articles", [])) == 0 or
+            len(materials.get("practice", [])) == 0 or
+            len(materials.get("tools", [])) == 0
+        ):
+            fallback = AIService.fetch_current_materials_with_search(topic)
+
+            return {
+                "videos": materials.get("videos") or fallback["videos"],
+                "articles": materials.get("articles") or fallback["articles"],
+                "practice": materials.get("practice") or fallback["practice"],
+                "tools": materials.get("tools") or fallback["tools"],
+            }
+
+        # Case C: everything is fine
+        return materials
+
+
+
 
     @staticmethod
     def generate_flashcards(data):
@@ -637,7 +669,6 @@ Your response:""")
                 "tools": AIService.validate_resources(materials.get("tools", []))
             }
             
-            # FIX: Return just the validated_materials, not nested under "materials"
             return validated_materials
             
         except Exception as e:

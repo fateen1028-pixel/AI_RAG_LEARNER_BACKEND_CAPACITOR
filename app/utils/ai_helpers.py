@@ -4,6 +4,7 @@ import re
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder, PromptTemplate
 from langchain_community.tools import DuckDuckGoSearchRun
 from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain_core.output_parsers import JsonOutputParser
 
 # LLM Setup
 gemini_api_key = os.getenv("GOOGLE_API_KEY")
@@ -11,305 +12,291 @@ llm = ChatGoogleGenerativeAI(
     model="gemini-2.5-flash", 
     google_api_key=gemini_api_key,
     temperature=0,
-    markdown=True
+    markdown=False
 )
 
 search = DuckDuckGoSearchRun()
+json_parser = JsonOutputParser()
 
 # UPDATED: Markdown-optimized Prompt Templates
 chat_qa_prompt = ChatPromptTemplate.from_messages([
-    ("system", """You are a professional AI tutor that ALWAYS responds in clean, well-structured Markdown format.
+    ("system", """You are a professional AI tutor.
 
-# RESPONSE FORMATTING RULES:
-- Use proper Markdown formatting for ALL responses
-- Use headings (#, ##, ###) to structure your content
-- Use bullet points (*) and numbered lists (1.) for lists
-- Use **bold** for important concepts and *italic* for emphasis
-- Use tables when presenting comparative information
-- ALWAYS wrap code examples in triple backticks with language specification: ```python
-- NEVER escape backticks in code examples
-- Use blockquotes (>) for important notes or warnings
-- Keep paragraphs concise and well-structured
-- If you output code, ALWAYS include triple backticks.
-- NEVER output code without triple backticks.
+# RESPONSE FORMAT
 
-# CONTENT GUIDELINES:
-- Provide clear, educational explanations
-- Include practical examples when relevant
-- Structure complex topics with headings and subheadings
-- Use lists to break down steps or key points
-- Highlight important concepts with bold text
+Always respond as a VALID JSON object strictly in the following schema:
+
+{{
+  "bullets": [ "A bullet point", "Another bullet point" ],
+  "steps": [ "Step 1...", "Step 2..." ],
+  "bold": [ "Key bold concept 1", "Key bold concept 2" ],
+  "markdown": "Full response in Markdown format with correct headings, **bold**, lists, and code blocks.",
+  "code_blocks": [
+      {{"language": "python", "code": "print('hello')"}}
+  ]
+}}
+
+- Summarize the answer using the above fields.
+- The 'markdown' field should contain your complete response with Markdown (including headings, lists, bold, etc.), and MUST be the same as you would show a user in a chat.
+- In 'bullets', keep only the main points.
+- In 'steps', provide stepwise how-to if applicable, else an empty list.
+- In 'bold', extract key concepts and bold phrases.
+- In 'code_blocks', extract code snippets if present (language required).
+- DO NOT return anything outside this structure.
 
 Current Tasks Context:
 {tasks_context}
 
-Remember: Always format your response using Markdown. Never use plain text without formatting.
+Chat history: Use context only, do NOT repeat in reply.
+
+REMEMBER: Respond ONLY with JSON.
 """),
     MessagesPlaceholder(variable_name="chat_history"),
     ("human", "{question}"),
 ])
 
+
 roadmap_prompt = PromptTemplate.from_template("""
 You are an expert study planner.
 
-Create a structured JSON roadmap. For each day, break the high-level tasks down into smaller, highly actionable sub-tasks (micro-todos).
+Return ONLY a strictly valid JSON object with this structure:
 
-Inputs:
-- topic: {topic}
-- days: {days}
-- hours: {hours}
-- experience: {experience}
-
-Return ONLY JSON with this exact structure:
-{{
+{
   "topic": "{topic}",
   "days": {days},
   "hours": {hours},
   "roadmap": [
-    {{
+    {
       "day": 1,
       "tasks": [
-        {{ 
-          "parent_task": "High-level Task Title (e.g., Introduction to C++ and Setting up the Environment)", 
+        {
+          "parent_task": "High-level task title",
           "original_duration_minutes": 120,
           "sub_tasks": [
-            {{
-                "task": "Micro-task 1 (e.g., Install the C++ compiler)",
-                "duration_minutes": 30,
-                "description": "One sentence action explaining this step."
-            }},
-            {{
-                "task": "Micro-task 2 (e.g., Follow a 90-minute tutorial on basic syntax)",
-                "duration_minutes": 90,
-                "description": "One sentence action explaining this step."
-            }}
+            {
+              "task": "Micro task",
+              "duration_minutes": 30,
+              "description": "One sentence explanation."
+            }
           ]
-        }},
-        // ... more parent tasks and their sub_tasks
+        }
       ]
-    }}
+    }
   ]
-}}
+}
 
-Important Constraints: 
-- Each object in the "tasks" array MUST contain a "parent_task", "original_duration_minutes", and a "sub_tasks" array.
-- The sum of all "duration_minutes" in "sub_tasks" MUST equal "original_duration_minutes".
-- Sub-task descriptions must be a single, focused sentence.
-- Use clear, actionable titles for sub-tasks.
+Rules:
+- Only valid JSON.
+- No text outside JSON.
+- Sub-task durations MUST sum to parent.
+- Use actionable steps.
 """)
+
 
 task_qa_prompt = PromptTemplate.from_template("""
-You are a professional AI tutor that ALWAYS responds in clean, well-structured Markdown format.
+You are a professional AI tutor.
 
-# RESPONSE FORMATTING RULES:
-- Use proper Markdown formatting for ALL responses
-- Use headings (#, ##, ###) to structure your content
-- Use bullet points (*) and numbered lists (1.) for lists
-- Use **bold** for important concepts and *italic* for emphasis
-- Use tables when presenting comparative information
-- ALWAYS wrap code examples in triple backticks with language specification: ```python
-- NEVER escape backticks in code examples
-- Use blockquotes (>) for important notes or warnings
+You MUST return ONLY JSON with:
 
-# CONTENT GUIDELINES:
-- Provide clear, educational explanations
-- Include practical examples when relevant
-- Structure complex topics with headings and subheadings
-- Use lists to break down steps or key points
-- Highlight important concepts with bold text
+{
+  "answer": "Full answer as a plain string",
+  "key_points": ["Point 1", "Point 2"],
+  "steps": ["Step 1", "Step 2"],
+  "examples": ["Example explanation"],
+  "code_blocks": [
+      {"language": "python", "code": "print('hello')"}
+  ]
+}
 
-Tasks for today (for context):
+Rules:
+- No markdown formatting, only plain strings.
+- No text outside the JSON.
+- Follow the structure exactly.
+
+Tasks for today:
 {tasks_context}
 
-Student's Question:
+Question:
 {question}
-
-Remember: Always format your response using Markdown. Never use plain text without formatting.
 """)
+
 
 refinement_prompt_template = PromptTemplate.from_template("""
-You are an expert study planner. Refine the provided learning roadmap based on the user's new instruction.
+You must refine the given roadmap.
 
-IMPORTANT: Maintain the nested "sub_tasks" structure. If you modify a high-level task, update the sub-tasks (including durations and descriptions) accordingly. The sum of all "duration_minutes" in "sub_tasks" MUST equal "original_duration_minutes".
+Return ONLY the updated JSON. No text outside JSON.
 
-Current Roadmap (JSON): {roadmap}
-User Instruction: {instruction}
+Current Roadmap:
+{roadmap}
 
-Return ONLY the refined JSON structure with the required nested format. Do not include any other text.
+Instruction:
+{instruction}
+
+Rules:
+- Maintain identical structure.
+- Keep sub-tasks nested.
+- Sub-task durations MUST sum to original_duration_minutes.
 """)
+
 
 # UPDATED: Flashcard prompt with markdown instructions
 flashcards_prompt = PromptTemplate.from_template("""
-Generate 8-10 high-quality flashcards for {topic} focusing on areas where the user needs more practice.
+Generate 8–10 flashcards and return ONLY valid JSON:
 
-Current understanding levels: {understanding}
+{
+  "flashcards": [
+    {
+      "question": "Question text",
+      "answer": "Answer text",
+      "category": "Category",
+      "difficulty": "easy/medium/hard"
+    }
+  ]
+}
 
-IMPORTANT: Return ONLY valid JSON with this exact structure - no additional text or explanations:
-{{
-    "flashcards": [
-        {{
-            "question": "Clear, specific question about key concept",
-            "answer": "Detailed, comprehensive answer with examples",
-            "category": "Concept category (e.g., Fundamentals, Advanced, Practical)",
-            "difficulty": "easy/medium/hard"
-        }}
-    ]
-}}
+Focus on weak areas:
+{understanding}
 
-Focus on weak areas and include practical applications. Make questions challenging but fair.
-Ensure each flashcard has question, answer, category, and difficulty fields.
+Topic:
+{topic}
+
+Rules:
+- Only JSON.
+- No extra text.
 """)
+
 
 # UPDATED: Study guide prompt with markdown instructions
 study_guide_prompt = PromptTemplate.from_template("""
-Create a comprehensive, structured study guide for {topic} including:
+Create a structured study guide.
 
-# LEARNING OBJECTIVES:
-- List 4-6 clear, measurable learning objectives
-- Focus on practical skills and understanding
+Return ONLY valid JSON with this structure:
 
-# KEY CONCEPTS:
-- Break down into fundamental, intermediate, and advanced concepts
-- Include essential terminology and principles
-
-# PRACTICE EXERCISES:
-- Provide 3-5 hands-on exercises with increasing difficulty
-- Include both conceptual and coding exercises
-- Specify difficulty levels (beginner/intermediate/advanced)
-
-# STUDY SCHEDULE:
-- Create a 4-week structured learning plan
-- Include weekly topics and practice activities
-- Suggest time commitments
-
-# RESOURCES:
-- Recommend 2-3 high-quality learning resources
-- Include documentation, tutorials, and practice platforms
-
-User's current understanding: {understanding}
-
-Return ONLY as structured JSON with this exact format:
-{{
-  "learning_objectives": [
-    "Objective 1",
-    "Objective 2"
-  ],
-  "key_concepts": [
-    "Concept 1",
-    "Concept 2"
-  ],
+{
+  "learning_objectives": ["Objective 1", "Objective 2"],
+  "key_concepts": ["Concept 1", "Concept 2"],
   "practice_exercises": [
-    {{
-      "title": "Exercise Title",
-      "description": "Clear description of what to practice",
+    {
+      "title": "Exercise name",
+      "description": "What to do",
       "difficulty": "beginner/intermediate/advanced"
-    }}
+    }
   ],
   "study_schedule": [
-    {{
+    {
       "week": 1,
-      "topics": ["Topic 1", "Topic 2"],
-      "exercises": ["Exercise 1", "Exercise 2"]
-    }}
+      "topics": ["Topic A", "Topic B"],
+      "exercises": ["Exercise 1"]
+    }
   ],
   "resources": [
-    {{
+    {
       "type": "documentation/tutorial/practice",
-      "title": "Resource Title",
-      "url": "resource_url"
-    }}
+      "title": "Resource title",
+      "url": "https://example.com"
+    }
   ]
-}}
+}
 
-Make it practical, actionable, and personalized based on the user's current progress.
+User understanding:
+{understanding}
+
+Topic:
+{topic}
+
+Rules:
+- No text outside JSON.
+- Follow structure exactly.
 """)
+
 
 materials_prompt = PromptTemplate.from_template("""
-For the topic "{topic}", provide a comprehensive list of learning resources including:
+Provide learning resources. Return ONLY valid JSON:
 
-1. Video tutorials (YouTube links preferred)
-2. Reading materials/articles
-3. Practice exercises/platforms
-4. Useful tools/websites
+{
+  "videos": [
+    {
+      "title": "Video title",
+      "url": "https://example.com",
+      "channel": "Channel",
+      "duration": "10 min",
+      "type": "video"
+    }
+  ],
+  "articles": [
+    {
+      "title": "Article",
+      "url": "https://example.com",
+      "source": "Website",
+      "reading_time": "5 min",
+      "type": "article"
+    }
+  ],
+  "practice": [
+    {
+      "title": "Practice title",
+      "url": "https://example.com",
+      "difficulty": "Beginner",
+      "type": "practice"
+    }
+  ],
+  "tools": [
+    {
+      "name": "Tool name",
+      "url": "https://example.com",
+      "description": "What it does",
+      "type": "tool"
+    }
+  ]
+}
 
-Return as JSON with this structure:
-{{
-    "videos": [
-        {{
-            "title": "Video title",
-            "url": "https://example.com",
-            "channel": "Channel name",
-            "duration": "Video duration",
-            "type": "video"
-        }}
-    ],
-    "articles": [
-        {{
-            "title": "Article title", 
-            "url": "https://example.com",
-            "source": "Website name",
-            "reading_time": "Estimated reading time",
-            "type": "article"
-        }}
-    ],
-    "practice": [
-        {{
-            "title": "Exercise title",
-            "url": "https://example.com", 
-            "difficulty": "Beginner/Intermediate/Advanced",
-            "type": "practice"
-        }}
-    ],
-    "tools": [
-        {{
-            "name": "Tool name",
-            "url": "https://example.com",
-            "description": "What it's used for",
-            "type": "tool"
-        }}
-    ]
-}}
+Topic:
+{topic}
+
+Rules:
+- Only JSON.
+- No additional text.
 """)
+
 
 # UPDATED: Search enhanced prompt with markdown
 search_enhanced_prompt = ChatPromptTemplate.from_messages([
-    ("system", """You are an expert tutor with access to current web information. You ALWAYS respond in clean, well-structured Markdown format.
+    ("system", """
+You are an expert tutor with access to search results.
 
-# RESPONSE FORMATTING RULES:
-- Use proper Markdown formatting for ALL responses
-- Use headings (#, ##, ###) to structure your content
-- Use bullet points (*) and numbered lists (1.) for lists
-- Use **bold** for important concepts and *italic* for emphasis
-- Use tables when presenting comparative information
-- ALWAYS wrap code examples in triple backticks with language specification
-- NEVER escape backticks in code examples
-- Use blockquotes (>) for important notes or warnings
+Return ONLY valid JSON with:
 
-Search Results for {topic}:
+{
+  "answer": "Full explanation",
+  "key_points": ["Point 1", "Point 2"],
+  "updated_understanding": {"concept": 60},
+  "resources": [
+    {
+      "title": "Resource",
+      "url": "https://example.com",
+      "type": "video/article/tool"
+    }
+  ]
+}
+
+Rules:
+- Use search results only inside the JSON.
+- No markdown.
+- No text outside JSON.
+
+Search Results:
 {search_results}
 
-User's Question: {question}
-
-User's Current Understanding: {understanding}
-
-# CONTENT GUIDELINES:
-1. Use the search results to provide up-to-date, accurate information
-2. Focus on the most relevant and educational content
-3. Provide specific resource recommendations with URLs when available
-4. Highlight recent developments or changes
-5. Include practical, actionable advice
-6. Update the user's understanding level based on this interaction
-7. Format your response using proper Markdown with clear structure
-
-IMPORTANT: Extract and include specific URLs from search results when relevant.
-Always format your response using Markdown. Never use plain text without formatting.
+User understanding:
+{understanding}
 """),
     MessagesPlaceholder(variable_name="chat_history"),
     ("human", "{question}")
 ])
 
+
 def run_chain(prompt, data):
-    chain = prompt | llm
+    chain = prompt | llm | json_parser
     try:
         response = chain.invoke(data)
         content = response.content

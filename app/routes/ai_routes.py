@@ -1,8 +1,12 @@
+# ai_routes.py
+
 from flask import Blueprint, request, jsonify
 from app.middleware.auth import token_required
 from app.services.ai_service import AIService
+from flask_cors import CORS
 
 ai_bp = Blueprint('ai', __name__)
+CORS(ai_bp, resources={r"/ai-env/*": {"origins": "*"}}, supports_credentials=True)
 
 @ai_bp.route("/ask-about-task", methods=["POST"])
 @token_required
@@ -18,21 +22,24 @@ def ask_about_task():
 def get_learning_materials():
     data = request.json
     topic = data.get("topic")
-    tasks = data.get("tasks", [])  # Add this line to get tasks
-    
+
     try:
-        result = AIService.get_learning_materials(topic, tasks)  # Pass tasks too
-        # Wrap the result in the expected format
+        # FIX: Call the correct service function 'get_learning_materials'
+        # which is search-first and includes validation.
+        materials = AIService.get_ai_generated_materials(topic)
+
         return jsonify({
             "status": "success",
-            "materials": result
+            "materials": materials
         })
     except Exception as e:
-        print(f"Error in get_learning_materials: {e}")
+        print("Error in get_learning_materials:", e)
         return jsonify({
             "status": "error",
             "message": "Failed to fetch learning materials"
         }), 500
+
+
 
 @ai_bp.route("/ai-env/chat", methods=["POST"])
 @token_required
@@ -49,10 +56,11 @@ def generate_flashcards():
     data = request.json
     try:
         result = AIService.generate_flashcards(data)
-        return jsonify({
-            "status": "success",
-            "flashcards": result
-        })
+        
+        # FIX: Return the result directly. The service already
+        # formats it as {"status": "success", "flashcards": [...]}.
+        return jsonify(result)
+        
     except Exception as e:
         print(f"Error in generate_flashcards: {e}")
         return jsonify({
@@ -66,10 +74,11 @@ def generate_study_guide():
     data = request.json
     try:
         result = AIService.generate_study_guide(data)
-        return jsonify({
-            "status": "success",
-            "study_guide": result
-        })
+        
+        # FIX: Return the result directly. The service already
+        # formats it as {"status": "success", "study_guide": {...}}.
+        return jsonify(result)
+        
     except Exception as e:
         print(f"Error in generate_study_guide: {e}")
         return jsonify({
